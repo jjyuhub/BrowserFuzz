@@ -1,0 +1,133 @@
+name: BrowserFuzz Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: 'Browser to test'
+        required: true
+        default: 'chrome'
+        type: choice
+        options:
+          - chrome
+          - firefox
+      iterations:
+        description: 'Number of fuzzing iterations'
+        required: true
+        default: '1000'
+        type: number
+      use_rl:
+        description: 'Use reinforcement learning'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  test-browser-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # Set a reasonable timeout
+
+    steps:
+    - uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install tensorflow numpy
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+    - name: Install Chrome browser
+      if: ${{ github.event.inputs.browser == 'chrome' || github.event.inputs.browser == '' }}
+      run: |
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+        google-chrome --version
+        
+    - name: Install Firefox browser
+      if: ${{ github.event.inputs.browser == 'firefox' }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y firefox
+        firefox --version
+        
+    - name: Set up Xvfb
+      run: |
+        sudo apt-get install -y xvfb
+        Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+        echo "DISPLAY=:99" >> $GITHUB_ENV
+        
+    - name: Prepare test environment
+      run: |
+        mkdir -p findings
+        # Create a simple HTML file to load in the browser for testing
+        mkdir -p test_pages
+        echo "<html><body><h1>Test Page for BrowserFuzz</h1><script>window.onerror=function(e){console.error(e);}</script></body></html>" > test_pages/test.html
+        
+    - name: Run BrowserFuzz
+      run: |
+        export DISPLAY=:99
+        ITERATIONS=${{ github.event.inputs.iterations || '1000' }}
+        BROWSER=${{ github.event.inputs.browser || 'chrome' }}
+        USE_RL_FLAG=""
+        if [ "${{ github.event.inputs.use_rl || 'true' }}" = "true" ]; then
+          USE_RL_FLAG="--use-rl"
+        fi
+        
+        python browserfuzz.py --browser $BROWSER --iterations $ITERATIONS --save-dir findings $USE_RL_FLAG
+      
+    - name: Check findings
+      run: |
+        echo "Checking for findings..."
+        ls -la findings/
+        CRASH_COUNT=$(ls -1 findings/ | wc -l)
+        echo "Total crashes found: $CRASH_COUNT"
+        
+        # Display crash details if any found
+        if [ $CRASH_COUNT -gt 0 ]; then
+          echo "Crash details:"
+          for crash_file in findings/*.json; do
+            echo "======== $crash_file ========"
+            cat "$crash_file" | jq
+          done
+        fi
+        
+    - name: Upload findings as artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: browserfuzz-findings
+        path: findings/
+        retention-days: 30
+
+    - name: Create summary report
+      run: |
+        echo "# BrowserFuzz Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "Browser: ${{ github.event.inputs.browser || 'chrome' }}" >> $GITHUB_STEP_SUMMARY
+        echo "Iterations: ${{ github.event.inputs.iterations || '1000' }}" >> $GITHUB_STEP_SUMMARY
+        echo "Reinforcement Learning: ${{ github.event.inputs.use_rl || 'true' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Findings Summary" >> $GITHUB_STEP_SUMMARY
+        CRASH_COUNT=$(ls -1 findings/ | wc -l)
+        echo "Total potential vulnerabilities found: $CRASH_COUNT" >> $GITHUB_STEP_SUMMARY
+        
+        if [ $CRASH_COUNT -gt 0 ]; then
+          echo "### Top 5 Crash Types:" >> $GITHUB_STEP_SUMMARY
+          # This is a simplified analysis - in real usage you'd want more sophisticated analysis
+          for crash_file in $(ls -1 findings/*.json | head -5); do
+            EXIT_CODE=$(cat "$crash_file" | jq '.exit_code')
+            CRASH_ID=$(basename "$crash_file" .json)
+            echo "- Crash ID: $CRASH_ID (Exit code: $EXIT_CODE)" >> $GITHUB_STEP_SUMMARY
+          done
+        else
+          echo "No crashes detected in this run." >> $GITHUB_STEP_SUMMARY
+        fi
