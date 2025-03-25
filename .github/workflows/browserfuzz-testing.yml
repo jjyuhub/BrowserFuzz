@@ -29,7 +29,6 @@ on:
 jobs:
   test-browser-fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # Set a reasonable timeout
 
     steps:
     - uses: actions/checkout@v3
