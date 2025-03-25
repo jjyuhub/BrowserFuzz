@@ -15,7 +15,7 @@ BrowserFuzz is an advanced fuzzing framework that uses reinforcement learning to
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/browserfuzz.git
+git clone https://github.com/jjyuhub/browserfuzz.git
 cd browserfuzz
 
 # Install dependencies
